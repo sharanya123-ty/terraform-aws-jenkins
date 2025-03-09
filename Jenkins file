@@ -1,0 +1,90 @@
+pipeline {
+    agent any
+
+    environment {
+        // AWS credentials stored in Jenkins credentials store
+        AWS_ACCESS_KEY_ID     = credentials('AWS_ACCESS_KEY_ID')
+        AWS_SECRET_ACCESS_KEY = credentials('AWS_SECRET_ACCESS_KEY')
+        
+    }
+    parameters {
+        booleanParam(name: 'autoApprove', defaultValue: false, description: 'Apply automatically?')
+        booleanParam(name: 'destroy', defaultValue: false, description: 'Destroy infrastructure?')
+		}
+		
+    stages {
+        stage('Checkout') {
+            steps {
+                // Checkout your repository containing both Terraform and Ansible code
+                sh 'rm -rf terraform && git clone https://github.com/sonyhl05/assignment_terraform.git terraform'
+            }
+        }
+       
+        stage('Terraform Init') {
+            steps {
+                // Initialize Terraform with remote backend configuration
+                dir('terraform/modules/ec2_instance') {
+                    sh 'terraform init'
+                }
+            }
+        }
+
+        stage('Terraform Validate') {
+            steps {
+                dir('terraform/modules/ec2_instance') {
+                    // Validate the Terraform configuration for syntax and internal consistency
+                    sh 'terraform validate'
+                }
+            }
+        }
+
+        stage('Terraform Plan') {
+            steps {
+                dir('terraform/modules/ec2_instance') {
+                    // Generate an execution plan and output it to a file
+                    sh 'terraform plan -out=tfplan'
+                }
+            }
+        }
+
+        stage('Terraform Apply') {
+            steps {
+                dir('terraform/modules/ec2_instance') {
+                    // Apply the Terraform plan automatically
+                    sh 'terraform apply -auto-approve tfplan'
+                }
+            }
+        }
+
+        stage('Run Ansible Playbook from Jenkins') {
+            steps {
+                dir('/home/ubuntu/ansible') {
+                script {
+                    // Dynamically create an inventory file with the EC2 instance details.
+                    // Ensure the ansible_user is correct for your EC2 instance (e.g., "ec2-user" for Amazon Linux, "ubuntu" for Ubuntu)
+                    sh '''
+					    echo "[web]" > inventory
+                        echo "${EC2_IP} ansible_user=ec2-user ansible_ssh_private_key_file=${SSH_KEY}" >> inventory
+                    '''
+                    // Execute the Ansible playbook using the generated inventory file.
+                    sh 'ansible-playbook -i inventory playbook.yml'
+                }
+              }
+            }
+        }
+        stage('Terraform Destroy') {
+            when {
+                expression { return params.DESTROY }
+            }
+            steps {
+                // Approval step before destroying the infrastructure.
+                input message: "Do you want to destroy the infrastructure?", ok: "Yes, Destroy it"
+                dir('terraform') {
+                    sh 'terraform destroy -auto-approve'
+                }
+            }
+        }
+    }    
+
+
+}
